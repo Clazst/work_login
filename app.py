@@ -1,20 +1,22 @@
 import streamlit as st
 import pandas as pd
-from io import BytesIO
-from fpdf import FPDF
 import plotly.express as px
+from fpdf import FPDF
+from io import BytesIO
+from datetime import datetime
 
 # Initialize session state
 if 'work_log' not in st.session_state:
-    st.session_state.work_log = []
+    st.session_state.work_log = pd.DataFrame(columns=['Date', 'Start Time', 'End Time', 'Hours Worked', 'Leave Type', 'Leave Earned'])
 
-if 'university_leave_balance' not in st.session_state:
-    st.session_state.university_leave_balance = 14.0
+# Title
+st.title("Work Hours Logger & Leave Dashboard")
 
-if 'bookdash_leave_balance' not in st.session_state:
-    st.session_state.bookdash_leave_balance = 0.0
-
-st.title("Work Hours Logger and Leave Tracker")
+# Sidebar filters
+st.sidebar.header("Filters")
+selected_year = st.sidebar.selectbox("Select Year", options=sorted(set(pd.to_datetime(st.session_state.work_log['Date']).dt.year.tolist() + [datetime.now().year])))
+selected_month = st.sidebar.selectbox("Select Month", options=list(range(1, 13)))
+selected_leave_type = st.sidebar.selectbox("Select Leave Type", options=["All", "University", "BookDash"])
 
 # Input form
 with st.form("log_form"):
@@ -24,85 +26,79 @@ with st.form("log_form"):
     submitted = st.form_submit_button("Log Work")
 
     if submitted:
-        hours_worked = (pd.Timestamp.combine(pd.Timestamp.today(), end_time) - 
-                        pd.Timestamp.combine(pd.Timestamp.today(), start_time)).seconds / 3600
-        day_name = date.strftime("%A")
-
-        if day_name == "Saturday":
+        hours_worked = (datetime.combine(date, end_time) - datetime.combine(date, start_time)).seconds / 3600
+        weekday = date.weekday()
+        if weekday == 5:
+            leave_type = "BookDash"
             leave_earned = 1.5
+        elif weekday == 6:
             leave_type = "BookDash"
-            st.session_state.bookdash_leave_balance += leave_earned
-        elif day_name == "Sunday":
             leave_earned = 2.0
-            leave_type = "BookDash"
-            st.session_state.bookdash_leave_balance += leave_earned
         else:
-            leave_earned = round(hours_worked / 8, 2)
             leave_type = "University"
-            st.session_state.university_leave_balance += leave_earned
+            leave_earned = hours_worked / 8
 
-        st.session_state.work_log.append({
-            "Date": date.strftime("%Y-%m-%d"),
-            "Day": day_name,
-            "Start Time": start_time.strftime("%H:%M"),
-            "End Time": end_time.strftime("%H:%M"),
-            "Hours Worked": hours_worked,
-            "Leave Type": leave_type,
-            "Leave Earned": leave_earned
-        })
+        new_entry = {
+            'Date': date.strftime("%Y-%m-%d"),
+            'Start Time': start_time.strftime("%H:%M"),
+            'End Time': end_time.strftime("%H:%M"),
+            'Hours Worked': round(hours_worked, 2),
+            'Leave Type': leave_type,
+            'Leave Earned': round(leave_earned, 2)
+        }
+        st.session_state.work_log = pd.concat([st.session_state.work_log, pd.DataFrame([new_entry])], ignore_index=True)
 
-# Display work log
-df = pd.DataFrame(st.session_state.work_log)
-if not df.empty:
-    st.subheader("Work Log")
-    st.dataframe(df)
+# Filtered data
+filtered_data = st.session_state.work_log.copy()
+filtered_data['Date'] = pd.to_datetime(filtered_data['Date'])
+filtered_data = filtered_data[filtered_data['Date'].dt.year == selected_year]
+filtered_data = filtered_data[filtered_data['Date'].dt.month == selected_month]
+if selected_leave_type != "All":
+    filtered_data = filtered_data[filtered_data['Leave Type'] == selected_leave_type]
 
-    # Summary
-    st.subheader("Leave Summary")
-    st.write(f"University Leave Balance: {st.session_state.university_leave_balance:.2f} days")
-    st.write(f"BookDash Leave Balance: {st.session_state.bookdash_leave_balance:.2f} days")
+# Display table
+st.subheader("Logged Work Entries")
+st.dataframe(filtered_data)
 
-    # Charts
-    fig = px.bar(df, x="Date", y="Hours Worked", color="Leave Type", title="Hours Worked by Date")
+# Summary
+total_hours = filtered_data['Hours Worked'].sum()
+university_leave = filtered_data[filtered_data['Leave Type'] == 'University']['Leave Earned'].sum()
+bookdash_leave = filtered_data[filtered_data['Leave Type'] == 'BookDash']['Leave Earned'].sum()
+
+st.metric("Total Hours Worked", f"{total_hours:.2f}")
+st.metric("University Leave Earned", f"{university_leave:.2f} days")
+st.metric("BookDash Leave Earned", f"{bookdash_leave:.2f} days")
+
+# Charts
+if not filtered_data.empty:
+    fig = px.bar(filtered_data, x='Date', y='Hours Worked', color='Leave Type',
+                 title="Hours Worked by Date", color_discrete_map={'University': 'blue', 'BookDash': 'orange'})
     st.plotly_chart(fig)
 
-    # Export to Excel
-    def to_excel(dataframe):
-        output = BytesIO()
-        with pd.ExcelWriter(output, engine='openpyxl') as writer:
-            dataframe.to_excel(writer, index=False, sheet_name='Work Log')
-        return output.getvalue()
+    fig2 = px.pie(filtered_data, names='Leave Type', values='Leave Earned',
+                  title="Leave Distribution", color_discrete_map={'University': 'blue', 'BookDash': 'orange'})
+    st.plotly_chart(fig2)
 
-    # Export to PDF
-    def to_pdf(dataframe):
-        pdf = FPDF()
-        pdf.add_page()
-        pdf.set_font("Arial", size=12)
-        pdf.cell(200, 10, txt="Work Log Summary", ln=True, align='C')
-        pdf.ln(10)
+# Export buttons
+st.subheader("Export Work Log")
 
-        col_width = pdf.w / (len(dataframe.columns) + 1)
-        row_height = pdf.font_size + 2
+# Excel export
+excel_buffer = BytesIO()
+with pd.ExcelWriter(excel_buffer, engine='openpyxl') as writer:
+    filtered_data.to_excel(writer, index=False, sheet_name='Work Log')
+st.download_button("Download Excel", data=excel_buffer.getvalue(), file_name="work_log.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 
-        # Header
-        for col in dataframe.columns:
-            pdf.cell(col_width, row_height, col, border=1)
-        pdf.ln(row_height)
+# PDF export
+pdf = FPDF()
+pdf.add_page()
+pdf.set_font("Arial", size=12)
+pdf.cell(200, 10, txt="Work Log Summary", ln=True, align='C')
+pdf.ln(10)
 
-        # Rows
-        for _, row in dataframe.iterrows():
-            for item in row:
-                pdf.cell(col_width, row_height, str(item), border=1)
-            pdf.ln(row_height)
+for index, row in filtered_data.iterrows():
+    line = f"{row['Date'].strftime('%Y-%m-%d')} | {row['Start Time']} - {row['End Time']} | {row['Hours Worked']} hrs | {row['Leave Type']} | {row['Leave Earned']} days"
+    pdf.cell(200, 10, txt=line, ln=True)
 
-        pdf_output = BytesIO()
-        pdf_bytes = pdf.output(dest='S').encode('latin1')
-        pdf_output.write(pdf_bytes)
-        pdf_output.seek(0)
-        return pdf_output.getvalue()
+pdf_buffer = BytesIO(pdf.output(dest='S').encode('latin1'))
+st.download_button("Download PDF", data=pdf_buffer.getvalue(), file_name="work_log.pdf", mime="application/pdf")
 
-    excel_data = to_excel(df)
-    pdf_data = to_pdf(df)
-
-    st.download_button("📥 Download Excel", data=excel_data, file_name="work_log.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
-    st.download_button("📥 Download PDF", data=pdf_data, file_name="work_log.pdf", mime="application/pdf")
