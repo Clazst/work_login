@@ -1,21 +1,20 @@
-
 import streamlit as st
 import pandas as pd
+from io import BytesIO
+from fpdf import FPDF
 import plotly.express as px
-from datetime import datetime
 
 # Initialize session state
-if 'log' not in st.session_state:
-    st.session_state.log = []
+if 'work_log' not in st.session_state:
+    st.session_state.work_log = []
 
-if 'university_leave' not in st.session_state:
-    st.session_state.university_leave = 14.0  # Starting university leave
+if 'university_leave_balance' not in st.session_state:
+    st.session_state.university_leave_balance = 14.0
 
-if 'bookdash_leave' not in st.session_state:
-    st.session_state.bookdash_leave = 0.0  # Starting BookDash overtime leave
+if 'bookdash_leave_balance' not in st.session_state:
+    st.session_state.bookdash_leave_balance = 0.0
 
-# Title
-st.title("Work Hours Logger & Leave Tracker")
+st.title("Work Hours Logger and Leave Tracker")
 
 # Input form
 with st.form("log_form"):
@@ -25,65 +24,85 @@ with st.form("log_form"):
     submitted = st.form_submit_button("Log Work")
 
     if submitted:
-        # Calculate hours worked
-        start_dt = datetime.combine(date, start_time)
-        end_dt = datetime.combine(date, end_time)
-        hours_worked = (end_dt - start_dt).total_seconds() / 3600
+        hours_worked = (pd.Timestamp.combine(pd.Timestamp.today(), end_time) - 
+                        pd.Timestamp.combine(pd.Timestamp.today(), start_time)).seconds / 3600
+        day_name = date.strftime("%A")
 
-        # Determine day of week
-        day_of_week = date.strftime("%A")
-
-        # Calculate leave earned
-        leave_earned = 0.0
-        university_leave_used = 0.0
-        bookdash_leave_earned = 0.0
-
-        if day_of_week == "Saturday":
-            bookdash_leave_earned = 1.5
-            st.session_state.bookdash_leave += bookdash_leave_earned
-        elif day_of_week == "Sunday":
-            bookdash_leave_earned = 2.0
-            st.session_state.bookdash_leave += bookdash_leave_earned
+        if day_name == "Saturday":
+            leave_earned = 1.5
+            leave_type = "BookDash"
+            st.session_state.bookdash_leave_balance += leave_earned
+        elif day_name == "Sunday":
+            leave_earned = 2.0
+            leave_type = "BookDash"
+            st.session_state.bookdash_leave_balance += leave_earned
         else:
-            leave_earned = hours_worked / 8.0
-            university_leave_used = leave_earned
-            st.session_state.university_leave -= university_leave_used
+            leave_earned = round(hours_worked / 8, 2)
+            leave_type = "University"
+            st.session_state.university_leave_balance += leave_earned
 
-        # Log entry
-        st.session_state.log.append({
-            "Date": date,
-            "Day": day_of_week,
-            "Start": start_time.strftime("%H:%M"),
-            "End": end_time.strftime("%H:%M"),
-            "Hours Worked": round(hours_worked, 2),
-            "University Leave Used": round(university_leave_used, 2),
-            "BookDash Leave Earned": round(bookdash_leave_earned, 2)
+        st.session_state.work_log.append({
+            "Date": date.strftime("%Y-%m-%d"),
+            "Day": day_name,
+            "Start Time": start_time.strftime("%H:%M"),
+            "End Time": end_time.strftime("%H:%M"),
+            "Hours Worked": hours_worked,
+            "Leave Type": leave_type,
+            "Leave Earned": leave_earned
         })
 
-# Display log
-if st.session_state.log:
-    df = pd.DataFrame(st.session_state.log)
+# Display work log
+df = pd.DataFrame(st.session_state.work_log)
+if not df.empty:
     st.subheader("Work Log")
     st.dataframe(df)
 
     # Summary
-    total_hours = df["Hours Worked"].sum()
-    total_university_leave_used = df["University Leave Used"].sum()
-    total_bookdash_leave_earned = df["BookDash Leave Earned"].sum()
-
-    st.markdown(f"**Total Hours Worked:** {total_hours:.2f}")
-    st.markdown(f"**University Leave Remaining:** {st.session_state.university_leave:.2f} days")
-    st.markdown(f"**BookDash Leave Earned:** {st.session_state.bookdash_leave:.2f} days")
+    st.subheader("Leave Summary")
+    st.write(f"University Leave Balance: {st.session_state.university_leave_balance:.2f} days")
+    st.write(f"BookDash Leave Balance: {st.session_state.bookdash_leave_balance:.2f} days")
 
     # Charts
-    st.subheader("Visual Dashboard")
+    fig = px.bar(df, x="Date", y="Hours Worked", color="Leave Type", title="Hours Worked by Date")
+    st.plotly_chart(fig)
 
-    # Hours worked per day
-    fig_hours = px.bar(df, x="Date", y="Hours Worked", color="Day", title="Hours Worked Per Day")
-    st.plotly_chart(fig_hours)
+    # Export to Excel
+    def to_excel(dataframe):
+        output = BytesIO()
+        with pd.ExcelWriter(output, engine='openpyxl') as writer:
+            dataframe.to_excel(writer, index=False, sheet_name='Work Log')
+        return output.getvalue()
 
-    # Leave earned over time
-    df_leave = df.copy()
-    df_leave["Total Leave Earned"] = df_leave["BookDash Leave Earned"] + df_leave["University Leave Used"]
-    fig_leave = px.line(df_leave, x="Date", y="Total Leave Earned", title="Leave Earned Over Time")
-    st.plotly_chart(fig_leave)
+    # Export to PDF
+    def to_pdf(dataframe):
+        pdf = FPDF()
+        pdf.add_page()
+        pdf.set_font("Arial", size=12)
+        pdf.cell(200, 10, txt="Work Log Summary", ln=True, align='C')
+        pdf.ln(10)
+
+        col_width = pdf.w / (len(dataframe.columns) + 1)
+        row_height = pdf.font_size + 2
+
+        # Header
+        for col in dataframe.columns:
+            pdf.cell(col_width, row_height, col, border=1)
+        pdf.ln(row_height)
+
+        # Rows
+        for _, row in dataframe.iterrows():
+            for item in row:
+                pdf.cell(col_width, row_height, str(item), border=1)
+            pdf.ln(row_height)
+
+        pdf_output = BytesIO()
+        pdf_bytes = pdf.output(dest='S').encode('latin1')
+        pdf_output.write(pdf_bytes)
+        pdf_output.seek(0)
+        return pdf_output.getvalue()
+
+    excel_data = to_excel(df)
+    pdf_data = to_pdf(df)
+
+    st.download_button("📥 Download Excel", data=excel_data, file_name="work_log.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+    st.download_button("📥 Download PDF", data=pdf_data, file_name="work_log.pdf", mime="application/pdf")
