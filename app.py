@@ -89,8 +89,8 @@ if not filtered_data.empty:
     pdf.cell(200, 10, txt="Work Log Summary", ln=True, align='C')
     for index, row in filtered_data.iterrows():
         pdf.cell(200, 10, txt=f"{row['Date'].strftime('%Y-%m-%d')} | {row['Start Time']} - {row['End Time']} | {row['Hours Worked']} hrs | {row['Leave Type']} | {row['Leave Earned']} days", ln=True)
-    pdf_buffer = BytesIO()
-    pdf.output(pdf_buffer)
+    pdf_bytes = pdf.output(dest='S').encode('latin1')
+    pdf_buffer = BytesIO(pdf_bytes)
     st.download_button("Download PDF", data=pdf_buffer.getvalue(), file_name="work_log.pdf")
 else:
     st.info("No data available for the selected filters.")
