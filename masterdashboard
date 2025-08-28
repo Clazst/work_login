@@ -1,0 +1,141 @@
+import streamlit as st
+import pandas as pd
+import plotly.express as px
+from datetime import datetime
+from io import BytesIO
+from fpdf import FPDF
+import os
+
+# File to persist user data
+DATA_FILE = "user_data.xlsx"
+
+# Load or initialize data
+def load_data():
+    if os.path.exists(DATA_FILE):
+        return pd.read_excel(DATA_FILE, engine='openpyxl')
+    else:
+        return pd.DataFrame(columns=[
+            "Username", "Date", "Start Time", "End Time", "Company", "Part-time Work",
+            "Hours Worked", "Leave Type", "Leave Earned", "Leave Used"
+        ])
+
+def save_data(df):
+    df.to_excel(DATA_FILE, index=False, engine='openpyxl')
+
+# Calculate hours worked
+def calculate_hours(start, end):
+    fmt = "%H:%M"
+    start_dt = datetime.strptime(start, fmt)
+    end_dt = datetime.strptime(end, fmt)
+    return round((end_dt - start_dt).seconds / 3600, 2)
+
+# Calculate leave earned
+def calculate_leave(date_str, hours):
+    date = datetime.strptime(date_str, "%Y-%m-%d")
+    weekday = date.weekday()
+    if weekday == 5:  # Saturday
+        return 1.5, "BookDash"
+    elif weekday == 6:  # Sunday
+        return 2.0, "BookDash"
+    else:
+        return round(hours / 8, 2), "University"
+
+# PDF export
+def generate_pdf(df_filtered):
+    pdf = FPDF()
+    pdf.add_page()
+    pdf.set_font("Arial", size=12)
+    pdf.cell(200, 10, txt="Work Log Summary", ln=True, align='C')
+    pdf.ln(10)
+    for index, row in df_filtered.iterrows():
+        line = f"{row['Date']} | {row['Start Time']}-{row['End Time']} | {row['Company']} | {row['Hours Worked']} hrs | {row['Leave Type']} | Earned: {row['Leave Earned']} | Used: {row['Leave Used']}"
+        pdf.multi_cell(0, 10, txt=line)
+    pdf_bytes = pdf.output(dest='S').encode('latin1')
+    return BytesIO(pdf_bytes)
+
+# Streamlit UI
+st.set_page_config(page_title="Master Work Dashboard", layout="wide")
+st.title("📊 Master Work Hours & Leave Dashboard")
+
+# Login
+username = st.text_input("Enter your username to log in:")
+if username:
+    df = load_data()
+    st.sidebar.header("Log Work")
+    with st.sidebar.form("log_form"):
+        date = st.date_input("Date")
+        start_time = st.time_input("Start Time")
+        end_time = st.time_input("End Time")
+        company = st.text_input("Company Name")
+        part_time = st.text_input("Part-time Work Description")
+        leave_used = st.number_input("Leave Used (days)", min_value=0.0, step=0.5)
+        submitted = st.form_submit_button("Log Work")
+        if submitted:
+            hours = calculate_hours(start_time.strftime("%H:%M"), end_time.strftime("%H:%M"))
+            leave_earned, leave_type = calculate_leave(str(date), hours)
+            new_entry = {
+                "Username": username,
+                "Date": str(date),
+                "Start Time": start_time.strftime("%H:%M"),
+                "End Time": end_time.strftime("%H:%M"),
+                "Company": company,
+                "Part-time Work": part_time,
+                "Hours Worked": hours,
+                "Leave Type": leave_type,
+                "Leave Earned": leave_earned,
+                "Leave Used": leave_used
+            }
+            df = pd.concat([df, pd.DataFrame([new_entry])], ignore_index=True)
+            save_data(df)
+            st.success("Work logged successfully!")
+
+    # Filter data for user
+    df_user = df[df["Username"] == username].copy()
+    df_user["Date"] = pd.to_datetime(df_user["Date"])
+    df_user["Year"] = df_user["Date"].dt.year
+    df_user["Month"] = df_user["Date"].dt.strftime("%B")
+
+    # Filters
+    st.sidebar.header("Filters")
+    year_filter = st.sidebar.selectbox("Select Year", options=sorted(df_user["Year"].unique()), index=0)
+    month_filter = st.sidebar.selectbox("Select Month", options=["All"] + sorted(df_user["Month"].unique()), index=0)
+    leave_filter = st.sidebar.selectbox("Select Leave Type", options=["All", "University", "BookDash"], index=0)
+
+    df_filtered = df_user[df_user["Year"] == year_filter]
+    if month_filter != "All":
+        df_filtered = df_filtered[df_filtered["Month"] == month_filter]
+    if leave_filter != "All":
+        df_filtered = df_filtered[df_filtered["Leave Type"] == leave_filter]
+
+    # Dashboard
+    st.subheader(f"📅 Work Summary for {username}")
+    col1, col2, col3 = st.columns(3)
+    col1.metric("Total Hours", round(df_filtered["Hours Worked"].sum(), 2))
+    col2.metric("Leave Earned", round(df_filtered["Leave Earned"].sum(), 2))
+    col3.metric("Leave Used", round(df_filtered["Leave Used"].sum(), 2))
+
+    # Charts
+    st.subheader("📈 Hours Worked by Month")
+    if not df_filtered.empty:
+        fig1 = px.bar(df_filtered.groupby("Month")["Hours Worked"].sum().reset_index(),
+                      x="Month", y="Hours Worked", color="Hours Worked", color_continuous_scale="Blues")
+        st.plotly_chart(fig1, use_container_width=True)
+
+        st.subheader("🧾 Leave Type Distribution")
+        fig2 = px.pie(df_filtered, names="Leave Type", values="Leave Earned", color_discrete_sequence=px.colors.qualitative.Set3)
+        st.plotly_chart(fig2, use_container_width=True)
+
+    # Table and Export
+    st.subheader("📋 Work Log")
+    st.dataframe(df_filtered.drop(columns=["Year", "Month"]), use_container_width=True)
+
+    col4, col5 = st.columns(2)
+    excel_buffer = BytesIO()
+    df_filtered.to_excel(excel_buffer, index=False, engine='openpyxl')
+    col4.download_button("📥 Download Excel", data=excel_buffer.getvalue(), file_name="work_log.xlsx")
+
+    pdf_buffer = generate_pdf(df_filtered)
+    col5.download_button("📄 Download PDF", data=pdf_buffer.getvalue(), file_name="work_log.pdf")
+else:
+    st.info("Please enter your username to begin.")
+
